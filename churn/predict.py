@@ -25,3 +25,5 @@ amostra = amostra.drop('flagChurn', axis=1)
 predicao = model.predict_proba(amostra[features])[:,1]
 amostra['proba'] = predicao
 amostra
+
+# %%

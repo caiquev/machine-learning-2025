@@ -5,9 +5,15 @@ import mlflow
 from sklearn import ensemble, linear_model, metrics, model_selection, tree, pipeline
 import matplotlib.pyplot as plt
 from feature_engine import discretisation, encoding
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+import xgboost as xgb
+from sklearn.neural_network import MLPClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 
 mlflow.set_tracking_uri("http://127.0.0.1:5000")
-mlflow.set_experiment(experiment_id=1)
+mlflow.set_experiment(experiment_id=0)
 
 
 # %%
@@ -87,44 +93,79 @@ onehot = encoding.OneHotEncoder(variables = best_features,ignore_format=True)
 
 # %%
 # MODEL
-# model = linear_model.LogisticRegression(random_state=42,
-#                                         max_iter=1000,)
-model = ensemble.RandomForestClassifier(
-    random_state=42,
-    n_jobs=2,
- )
 
 
-params = {
-    "min_samples_leaf":[15,20,25,30,50],
-    "n_estimators":[100,200,500,1000],
-    "criterion":['gini', 'entropy', 'log_loss']
+# 1. Define all your models and their specific hyperparameter grids
+# Notice that the parameter keys now start with 'model__' 
+# This tells GridSearchCV to apply these parameters to the 'model' step of the pipeline
+MODEL_CONFIGS = {
+    'random_forest': {
+        'estimator': RandomForestClassifier(random_state=42, n_jobs=-1),
+        'params': {
+            "model__min_samples_leaf": [15, 30, 50],
+            "model__n_estimators": [100, 500],
+            "model__criterion": ['gini', 'entropy']
+        }
+    },
+    'xgboost': {
+        'estimator': xgb.XGBClassifier(random_state=42, n_jobs=-1, eval_metric='logloss'),
+        'params': {
+            "model__max_depth": [3, 5, 7],
+            "model__n_estimators": [100, 300],
+            "model__learning_rate": [0.01, 0.1]
+        }
+    },
+    'logistic_regression': {
+        'estimator': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear'),
+        'params': {
+            "model__penalty": ['l1', 'l2'],
+            "model__C": [0.01, 0.1, 1, 10]
+        }
+    },
+    'mlp_classifier': {
+        'estimator': MLPClassifier(random_state=42, max_iter=500, early_stopping=True),
+        'params': {
+            "model__hidden_layer_sizes": [(50,), (100,), (50, 25)],
+            "model__activation": ['relu', 'tanh'],
+            "model__learning_rate_init": [0.001, 0.01]
+        }
+    }
 }
 
-# params = {
-#     'penalty': ['l1', 'l2'],
-#     'C': [0.01, 0.1, 1, 10, 100],
-#     'solver': ['liblinear', 'saga'],
-#     'class_weight': [None, 'balanced']
-# }
+# %%
+# 2. Select the model you want to train for this run
+SELECTED_MODEL = 'mlp_classifier' # Change this to 'random_forest', 'logistic_regression', or 'mlp_classifier'
 
-grid = model_selection.GridSearchCV(model, 
-                                    params, 
-                                    cv=3,
-                                    scoring='roc_auc',
-                                    verbose=4)
+# Fetch the specific config
+config = MODEL_CONFIGS[SELECTED_MODEL]
+estimator = config['estimator']
+params = config['params']
 
-
+# 3. Build the Pipeline
+# The estimator is dynamically injected as the last step
 model_pipeline = pipeline.Pipeline(
     steps= [
-        ('Discretizar',tree_discretization),
+        ('Discretizar', tree_discretization),
         ('Onehot', onehot),
-        ('Grid',grid)
+        ('model', estimator) # The generic name 'model' connects to the 'model__' prefix in your params
     ]
 )
 
+# 4. Wrap the ENTIRE pipeline in GridSearchCV
+# This ensures preprocessing is applied strictly to the training folds during CV
+grid = model_selection.GridSearchCV(
+    estimator=model_pipeline, 
+    param_grid=params, 
+    cv=3,
+    scoring='roc_auc',
+    verbose=4,
+    n_jobs=-1
+)
 
-with mlflow.start_run(run_name=model.__str__()):
+# 5. Run MLflow
+run_name = f"Churn_{SELECTED_MODEL.upper()}"
+
+with mlflow.start_run(run_name=run_name):
     mlflow.autolog()
     model_pipeline.fit(X_train,y_train)
 
@@ -184,11 +225,3 @@ plt.legend(
     ]
 )
 plt.show()
-# %%
-
-model_df = pd.Series({
-    "model":model_pipeline,
-    "features":best_features,
-    })
-
-model_df.to_pickle("model.pkl")
